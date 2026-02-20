@@ -138,12 +138,12 @@ public class FlutterSecureStorageConfig {
 
     public String getConfigPreferencesName() {
         return "FlutterSecureStorageConfiguration_" +
-                getStorageNamespace() + "__" + getCryptoProfile();
+                getStorageNamespace();
     }
 
     public String getKeyStoragePreferencesName() {
         return "FlutterSecureKeyStorage_" +
-                getStorageNamespace() + "__" + getCryptoProfile();
+                getStorageNamespace();
     }
 
     public String getNamespacedKey(String baseKey) {
