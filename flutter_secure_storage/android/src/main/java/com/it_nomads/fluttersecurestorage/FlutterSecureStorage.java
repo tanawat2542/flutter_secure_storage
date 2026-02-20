@@ -323,11 +323,12 @@ public class FlutterSecureStorage {
                     try {
                         storageCipher = storageCipherFactory.getCurrentStorageCipher(context, result.getCryptoObject().getCipher());
                         Log.d(TAG, "Biometric authentication succeeded");
+                        callback.onSuccess(null);
                     } catch (Exception e) {
                         Log.e(TAG, "Failed to initialize storage cipher after authentication", e);
                         callback.onError(e);
+                        return;
                     }
-                    callback.onSuccess(null);
                 }
 
                 @Override

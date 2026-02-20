@@ -21,20 +21,43 @@ public class StorageCipherImplementationAES18 implements StorageCipher {
     private static final String SHARED_PREFERENCES_KEY = "VGhpcyBpcyB0aGUga2V5IGZvciBhIHNlY3VyZSBzdG9yYWdlIEFFUyBLZXkK";
     private final String sharedPreferencesName;
     private final String sharedPreferencesKey;
+    private final String legacyScopedPreferencesName;
+    private final String legacyScopedPreferencesKey;
     private final Cipher cipher;
     private final SecureRandom secureRandom;
     private final Key secretKey;
 
     public StorageCipherImplementationAES18(Context context, KeyCipher rsaCipher, Cipher ignoredStorageCipher) throws Exception {
         secureRandom = new SecureRandom();
-        String namespace = resolveNamespace(rsaCipher);
-        sharedPreferencesName = SHARED_PREFERENCES_NAME + "_" + namespace;
-        sharedPreferencesKey = SHARED_PREFERENCES_KEY + "_" + namespace;
+        FlutterSecureStorageConfig resolvedConfig = resolveConfig(rsaCipher);
+        if (resolvedConfig == null) {
+            sharedPreferencesName = SHARED_PREFERENCES_NAME;
+            sharedPreferencesKey = SHARED_PREFERENCES_KEY;
+            legacyScopedPreferencesName = SHARED_PREFERENCES_NAME;
+            legacyScopedPreferencesKey = SHARED_PREFERENCES_KEY;
+        } else {
+            sharedPreferencesName = resolvedConfig.getKeyStoragePreferencesName();
+            sharedPreferencesKey = resolvedConfig.getNamespacedKey(SHARED_PREFERENCES_KEY);
+            legacyScopedPreferencesName = SHARED_PREFERENCES_NAME + "_" + resolvedConfig.getStorageNamespace();
+            legacyScopedPreferencesKey = SHARED_PREFERENCES_KEY + "_" + resolvedConfig.getStorageNamespace();
+        }
 
         SharedPreferences preferences = context.getSharedPreferences(sharedPreferencesName, Context.MODE_PRIVATE);
         SharedPreferences.Editor editor = preferences.edit();
 
         String aesKey = preferences.getString(sharedPreferencesKey, null);
+        if (aesKey == null) {
+            SharedPreferences legacyPreferences = context.getSharedPreferences(
+                    legacyScopedPreferencesName,
+                    Context.MODE_PRIVATE
+            );
+            String legacyAesKey = legacyPreferences.getString(legacyScopedPreferencesKey, null);
+            if (legacyAesKey != null) {
+                aesKey = legacyAesKey;
+                editor.putString(sharedPreferencesKey, legacyAesKey).apply();
+                legacyPreferences.edit().remove(legacyScopedPreferencesKey).apply();
+            }
+        }
         if (aesKey == null) {
             SharedPreferences legacyPreferences = context.getSharedPreferences(SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE);
             String legacyAesKey = legacyPreferences.getString(SHARED_PREFERENCES_KEY, null);
@@ -68,20 +91,22 @@ public class StorageCipherImplementationAES18 implements StorageCipher {
     public void deleteKey(Context context) {
         SharedPreferences preferences = context.getSharedPreferences(sharedPreferencesName, Context.MODE_PRIVATE);
         preferences.edit().remove(sharedPreferencesKey).apply();
+
+        SharedPreferences legacyScopedPreferences = context.getSharedPreferences(
+                legacyScopedPreferencesName,
+                Context.MODE_PRIVATE
+        );
+        legacyScopedPreferences.edit().remove(legacyScopedPreferencesKey).apply();
     }
 
-    private String resolveNamespace(KeyCipher keyCipher) {
+    private FlutterSecureStorageConfig resolveConfig(KeyCipher keyCipher) {
         FlutterSecureStorageConfig resolvedConfig = null;
         if (keyCipher instanceof KeyCipherImplementationRSA18) {
             resolvedConfig = ((KeyCipherImplementationRSA18) keyCipher).config;
         } else if (keyCipher instanceof KeyCipherImplementationAES23) {
             resolvedConfig = ((KeyCipherImplementationAES23) keyCipher).config;
         }
-
-        if (resolvedConfig == null) {
-            return "default";
-        }
-        return resolvedConfig.getStorageNamespace();
+        return resolvedConfig;
     }
 
     protected Cipher getCipher() throws Exception {
