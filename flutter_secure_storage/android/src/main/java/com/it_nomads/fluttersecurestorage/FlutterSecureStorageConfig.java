@@ -43,12 +43,16 @@ public class FlutterSecureStorageConfig {
     private final String storageCipherAlgorithm;
 
     public FlutterSecureStorageConfig(Map<String, Object> options) {
-        this.sharedPreferencesName = getStringOption(options, PREF_OPTION_NAME, DEFAULT_PREF_NAME);
-        this.sharedPreferencesKeyPrefix = getStringOption(options, PREF_OPTION_PREFIX, DEFAULT_KEY_PREFIX);
+        final String baseSharedPreferencesName = getStringOption(options, PREF_OPTION_NAME, DEFAULT_PREF_NAME);
+        final String baseSharedPreferencesKeyPrefix = getStringOption(options, PREF_OPTION_PREFIX, DEFAULT_KEY_PREFIX);
         this.deleteOnFailure = getBooleanOption(options, PREF_OPTION_DELETE_ON_FAILURE, DEFAULT_DELETE_ON_FAILURE);
         this.migrateOnAlgorithmChange = getBooleanOption(options, PREF_OPTION_MIGRATE_ON_ALGORITHM_CHANGE, DEFAULT_MIGRATE_ON_ALGORITHM_CHANGE);
         this.useEncryptedSharedPreferences = getBooleanOption(options, PREF_OPTION_ENCRYPTED_SHARED_PREFERENCES, DEFAULT_ENCRYPTED_SHARED_PREFERENCES);
         this.enforceBiometrics = getBooleanOption(options, PREF_OPTION_ENFORCE_BIOMETRICS, DEFAULT_ENFORCE_BIOMETRICS);
+        final boolean hasCustomPrefName = getOptionalStringOption(options, PREF_OPTION_NAME) != null;
+        final boolean hasCustomPrefPrefix = getOptionalStringOption(options, PREF_OPTION_PREFIX) != null;
+        this.sharedPreferencesName = resolveEffectivePrefName(baseSharedPreferencesName, hasCustomPrefName);
+        this.sharedPreferencesKeyPrefix = resolveEffectivePrefPrefix(baseSharedPreferencesKeyPrefix, hasCustomPrefPrefix);
         this.biometricPromptTitle = getStringOption(
                 options,
                 PREF_OPTION_BIOMETRIC_PROMPT_TITLE,
@@ -100,6 +104,20 @@ public class FlutterSecureStorageConfig {
         return defaultValue;
     }
 
+    private String resolveEffectivePrefName(String base, boolean hasCustomPrefName) {
+        if (hasCustomPrefName || !enforceBiometrics) {
+            return base;
+        }
+        return base + "__biometric";
+    }
+
+    private String resolveEffectivePrefPrefix(String base, boolean hasCustomPrefPrefix) {
+        if (hasCustomPrefPrefix || !enforceBiometrics) {
+            return base;
+        }
+        return base + "__biometric";
+    }
+
     public String getSharedPreferencesName() { return sharedPreferencesName; }
     public String getSharedPreferencesKeyPrefix() { return sharedPreferencesKeyPrefix; }
     public boolean shouldDeleteOnFailure() { return deleteOnFailure; }
@@ -112,6 +130,43 @@ public class FlutterSecureStorageConfig {
     public String getPrefOptionBiometricPromptSubtitle() { return biometricPromptSubtitle; }
     public String getPrefOptionStorageCipherAlgorithm() { return storageCipherAlgorithm; }
     public String getPrefOptionKeyCipherAlgorithm() { return keyCipherAlgorithm; }
+
+    public String getStorageNamespace() {
+        return sanitizeForSharedPreferencesName(sharedPreferencesName) + "__" +
+                sanitizeForSharedPreferencesName(sharedPreferencesKeyPrefix);
+    }
+
+    public String getConfigPreferencesName() {
+        return "FlutterSecureStorageConfiguration_" +
+                getStorageNamespace();
+    }
+
+    public String getKeyStoragePreferencesName() {
+        return "FlutterSecureKeyStorage_" +
+                getStorageNamespace();
+    }
+
+    public String getNamespacedKey(String baseKey) {
+        return baseKey + "_" + getStorageNamespace() + "__" + getCryptoProfile();
+    }
+
+    public String getRuntimeConfigSignature() {
+        return getStorageNamespace() + "|" +
+                getCryptoProfile() + "|" +
+                useEncryptedSharedPreferences;
+    }
+
+    private String getCryptoProfile() {
+        return sanitizeForSharedPreferencesName(
+                keyCipherAlgorithm + "__" +
+                        storageCipherAlgorithm + "__" +
+                        enforceBiometrics
+        );
+    }
+
+    private static String sanitizeForSharedPreferencesName(String value) {
+        return value.replaceAll("[^a-zA-Z0-9._-]", "_");
+    }
 
     @NonNull
     @Override

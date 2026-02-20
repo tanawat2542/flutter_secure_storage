@@ -4,6 +4,8 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Base64;
 
+import com.it_nomads.fluttersecurestorage.FlutterSecureStorageConfig;
+
 import java.security.Key;
 import java.security.SecureRandom;
 import java.security.spec.AlgorithmParameterSpec;
@@ -17,17 +19,31 @@ public class StorageCipherImplementationAES18 implements StorageCipher {
     private static final String KEY_ALGORITHM = "AES";
     private static final String SHARED_PREFERENCES_NAME = "FlutterSecureKeyStorage";
     private static final String SHARED_PREFERENCES_KEY = "VGhpcyBpcyB0aGUga2V5IGZvciBhIHNlY3VyZSBzdG9yYWdlIEFFUyBLZXkK";
+    private final String sharedPreferencesName;
+    private final String sharedPreferencesKey;
     private final Cipher cipher;
     private final SecureRandom secureRandom;
     private final Key secretKey;
 
     public StorageCipherImplementationAES18(Context context, KeyCipher rsaCipher, Cipher ignoredStorageCipher) throws Exception {
         secureRandom = new SecureRandom();
+        String namespace = resolveNamespace(rsaCipher);
+        sharedPreferencesName = SHARED_PREFERENCES_NAME + "_" + namespace;
+        sharedPreferencesKey = SHARED_PREFERENCES_KEY + "_" + namespace;
 
-        SharedPreferences preferences = context.getSharedPreferences(SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE);
+        SharedPreferences preferences = context.getSharedPreferences(sharedPreferencesName, Context.MODE_PRIVATE);
         SharedPreferences.Editor editor = preferences.edit();
 
-        String aesKey = preferences.getString(SHARED_PREFERENCES_KEY, null);
+        String aesKey = preferences.getString(sharedPreferencesKey, null);
+        if (aesKey == null) {
+            SharedPreferences legacyPreferences = context.getSharedPreferences(SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE);
+            String legacyAesKey = legacyPreferences.getString(SHARED_PREFERENCES_KEY, null);
+            if (legacyAesKey != null) {
+                aesKey = legacyAesKey;
+                editor.putString(sharedPreferencesKey, legacyAesKey).apply();
+                legacyPreferences.edit().remove(SHARED_PREFERENCES_KEY).apply();
+            }
+        }
 
         cipher = getCipher();
 
@@ -44,14 +60,28 @@ public class StorageCipherImplementationAES18 implements StorageCipher {
         secretKey = new SecretKeySpec(key, KEY_ALGORITHM);
 
         byte[] encryptedKey = rsaCipher.wrap(secretKey);
-        editor.putString(SHARED_PREFERENCES_KEY, Base64.encodeToString(encryptedKey, Base64.DEFAULT));
+        editor.putString(sharedPreferencesKey, Base64.encodeToString(encryptedKey, Base64.DEFAULT));
         editor.apply();
     }
 
     @Override
     public void deleteKey(Context context) {
-        SharedPreferences preferences = context.getSharedPreferences(SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE);
-        preferences.edit().remove(SHARED_PREFERENCES_KEY).apply();
+        SharedPreferences preferences = context.getSharedPreferences(sharedPreferencesName, Context.MODE_PRIVATE);
+        preferences.edit().remove(sharedPreferencesKey).apply();
+    }
+
+    private String resolveNamespace(KeyCipher keyCipher) {
+        FlutterSecureStorageConfig resolvedConfig = null;
+        if (keyCipher instanceof KeyCipherImplementationRSA18) {
+            resolvedConfig = ((KeyCipherImplementationRSA18) keyCipher).config;
+        } else if (keyCipher instanceof KeyCipherImplementationAES23) {
+            resolvedConfig = ((KeyCipherImplementationAES23) keyCipher).config;
+        }
+
+        if (resolvedConfig == null) {
+            return "default";
+        }
+        return resolvedConfig.getStorageNamespace();
     }
 
     protected Cipher getCipher() throws Exception {
