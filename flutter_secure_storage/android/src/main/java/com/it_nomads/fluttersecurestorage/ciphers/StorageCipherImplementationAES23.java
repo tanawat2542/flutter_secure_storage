@@ -23,15 +23,30 @@ public class StorageCipherImplementationAES23 implements StorageCipher {
     private static final String KEYSTORE_IV_NAME = "BVGhpcyBpcyB0aGUga2V5IGZvciBhIHNlY3VyZSBzdG9yYWdlIEFFUyBLZXkK";
     private final String sharedPreferencesName;
     private final String sharedPreferencesKey;
+    private final String legacyScopedPreferencesName;
+    private final String legacyScopedPreferencesKey;
+    private final boolean shouldUseLegacyGlobalFallback;
     private final Cipher cipher;
     private final SecureRandom secureRandom;
     private final Key secretKey;
 
     public StorageCipherImplementationAES23(Context context, KeyCipher keyCipher, Cipher cipher) throws Exception{
         secureRandom = new SecureRandom();
-        String namespace = resolveNamespace(keyCipher);
-        sharedPreferencesName = SHARED_PREFERENCES_NAME + "_" + namespace;
-        sharedPreferencesKey = KEYSTORE_IV_NAME + "_" + namespace;
+        FlutterSecureStorageConfig resolvedConfig = resolveConfig(keyCipher);
+        if (resolvedConfig == null) {
+            sharedPreferencesName = SHARED_PREFERENCES_NAME;
+            sharedPreferencesKey = KEYSTORE_IV_NAME;
+            legacyScopedPreferencesName = SHARED_PREFERENCES_NAME;
+            legacyScopedPreferencesKey = KEYSTORE_IV_NAME;
+            shouldUseLegacyGlobalFallback = true;
+        } else {
+            sharedPreferencesName = resolvedConfig.getKeyStoragePreferencesName();
+            sharedPreferencesKey = resolvedConfig.getNamespacedKey(KEYSTORE_IV_NAME);
+            legacyScopedPreferencesName = SHARED_PREFERENCES_NAME + "_" + resolvedConfig.getStorageNamespace();
+            legacyScopedPreferencesKey = KEYSTORE_IV_NAME + "_" + resolvedConfig.getStorageNamespace();
+            // Legacy global app-key is not profile-aware and can leak across biometric/non-biometric states.
+            shouldUseLegacyGlobalFallback = false;
+        }
         this.secretKey = loadOrGenerateApplicationKey(context, cipher);
         this.cipher = getCipher();
     }
@@ -42,6 +57,15 @@ public class StorageCipherImplementationAES23 implements StorageCipher {
         SharedPreferences preferences = context.getSharedPreferences(sharedPreferencesName, Context.MODE_PRIVATE);
         String encryptedAppKeyBase64 = preferences.getString(sharedPreferencesKey, null);
         if (encryptedAppKeyBase64 == null) {
+            SharedPreferences legacyPreferences = context.getSharedPreferences(legacyScopedPreferencesName, Context.MODE_PRIVATE);
+            String legacyEncryptedAppKey = legacyPreferences.getString(legacyScopedPreferencesKey, null);
+            if (legacyEncryptedAppKey != null) {
+                encryptedAppKeyBase64 = legacyEncryptedAppKey;
+                preferences.edit().putString(sharedPreferencesKey, legacyEncryptedAppKey).apply();
+                legacyPreferences.edit().remove(legacyScopedPreferencesKey).apply();
+            }
+        }
+        if (encryptedAppKeyBase64 == null && shouldUseLegacyGlobalFallback) {
             SharedPreferences legacyPreferences = context.getSharedPreferences(SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE);
             String legacyEncryptedAppKey = legacyPreferences.getString(KEYSTORE_IV_NAME, null);
             if (legacyEncryptedAppKey != null) {
@@ -74,20 +98,22 @@ public class StorageCipherImplementationAES23 implements StorageCipher {
     public void deleteKey(Context context) {
         SharedPreferences preferences = context.getSharedPreferences(sharedPreferencesName, Context.MODE_PRIVATE);
         preferences.edit().remove(sharedPreferencesKey).apply();
+
+        SharedPreferences legacyScopedPreferences = context.getSharedPreferences(
+                legacyScopedPreferencesName,
+                Context.MODE_PRIVATE
+        );
+        legacyScopedPreferences.edit().remove(legacyScopedPreferencesKey).apply();
     }
 
-    private String resolveNamespace(KeyCipher keyCipher) {
+    private FlutterSecureStorageConfig resolveConfig(KeyCipher keyCipher) {
         FlutterSecureStorageConfig resolvedConfig = null;
         if (keyCipher instanceof KeyCipherImplementationRSA18) {
             resolvedConfig = ((KeyCipherImplementationRSA18) keyCipher).config;
         } else if (keyCipher instanceof KeyCipherImplementationAES23) {
             resolvedConfig = ((KeyCipherImplementationAES23) keyCipher).config;
         }
-
-        if (resolvedConfig == null) {
-            return "default";
-        }
-        return resolvedConfig.getStorageNamespace();
+        return resolvedConfig;
     }
 
     protected Cipher getCipher() throws Exception {
