@@ -1,7 +1,6 @@
 package com.it_nomads.fluttersecurestorage.ciphers;
 
 import static android.security.keystore.KeyProperties.AUTH_BIOMETRIC_STRONG;
-import static android.security.keystore.KeyProperties.AUTH_DEVICE_CREDENTIAL;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -203,6 +202,10 @@ class KeyCipherImplementationAES23 implements KeyCipher {
         boolean deviceHasSecurity = isDeviceSecure();
         boolean enforceBiometrics = config.getEnforceBiometrics();
 
+        if (enforceBiometrics && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            throw new Exception("BIOMETRIC_UNAVAILABLE: Biometric-only enforcement requires Android 11 (API 30) or higher. Current device API: " + Build.VERSION.SDK_INT);
+        }
+
         // ENFORCEMENT MODE: Fail if enforcement enabled but no device security
         if (enforceBiometrics && !deviceHasSecurity) {
             throw new Exception("BIOMETRIC_UNAVAILABLE: Biometric enforcement enabled but device has no PIN, pattern, password, or biometric enrolled. Cannot generate secure key.");
@@ -226,7 +229,7 @@ class KeyCipherImplementationAES23 implements KeyCipher {
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 builder.setUserAuthenticationParameters(0,
-                        AUTH_DEVICE_CREDENTIAL | AUTH_BIOMETRIC_STRONG);
+                        AUTH_BIOMETRIC_STRONG);
             } else {
                 configureLegacyAuth(builder);
             }
@@ -271,7 +274,7 @@ class KeyCipherImplementationAES23 implements KeyCipher {
 
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         builder.setUserAuthenticationParameters(0,
-                                AUTH_DEVICE_CREDENTIAL | AUTH_BIOMETRIC_STRONG);
+                                AUTH_BIOMETRIC_STRONG);
                     } else {
                         configureLegacyAuth(builder);
                     }
