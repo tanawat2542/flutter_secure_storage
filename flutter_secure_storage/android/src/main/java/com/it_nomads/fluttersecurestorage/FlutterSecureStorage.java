@@ -992,8 +992,7 @@ public class FlutterSecureStorage {
             if (biometricManager == null) return false;
 
             int result = biometricManager.canAuthenticate(
-                    BiometricManager.Authenticators.BIOMETRIC_STRONG |
-                            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                    BiometricManager.Authenticators.BIOMETRIC_STRONG
             );
 
             return result == BiometricManager.BIOMETRIC_SUCCESS && isDeviceSecure();
@@ -1022,6 +1021,12 @@ public class FlutterSecureStorage {
             return; // Graceful degradation
         }
 
+        // Biometric-only enforcement requires API 30+ so Keystore/prompt can
+        // explicitly restrict to BIOMETRIC_STRONG without device credential fallback.
+        if (enforceRequired && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            throw new Exception("BIOMETRIC_UNAVAILABLE: Biometric-only enforcement requires Android 11 (API 30) or higher");
+        }
+
         // Check device security first (PIN/pattern/password)
         if (!isDeviceSecure()) {
             if (enforceRequired) {
@@ -1044,8 +1049,7 @@ public class FlutterSecureStorage {
             }
 
             int result = biometricManager.canAuthenticate(
-                    BiometricManager.Authenticators.BIOMETRIC_STRONG |
-                            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                    BiometricManager.Authenticators.BIOMETRIC_STRONG
             );
 
             // Handle specific BiometricManager status codes
@@ -1100,6 +1104,7 @@ public class FlutterSecureStorage {
         }
 
         BiometricPrompt.CryptoObject crypto = new BiometricPrompt.CryptoObject(cipher);
+        Executor executor = Executors.newSingleThreadExecutor();
 
         BiometricPrompt.Builder promptInfoBuilder = new BiometricPrompt.Builder(context)
                 .setTitle(config.getBiometricPromptTitle())
@@ -1107,14 +1112,28 @@ public class FlutterSecureStorage {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             promptInfoBuilder
-                    .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG | BiometricManager.Authenticators.DEVICE_CREDENTIAL);
+                    .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+                    .setNegativeButton(
+                            context.getString(android.R.string.cancel),
+                            executor,
+                            (dialog, which) -> securePreferencesCallback.onError(
+                                    new Exception("Biometric authentication canceled by user")
+                            )
+                    );
+        } else {
+            promptInfoBuilder.setNegativeButton(
+                    context.getString(android.R.string.cancel),
+                    executor,
+                    (dialog, which) -> securePreferencesCallback.onError(
+                            new Exception("Biometric authentication canceled by user")
+                    )
+            );
         }
 
         BiometricPrompt promptInfo = promptInfoBuilder
                 .build();
 
         CancellationSignal cancellationSignal = new CancellationSignal();
-        Executor executor = Executors.newSingleThreadExecutor();
 
         BiometricPrompt.AuthenticationCallback callback = new BiometricPrompt.AuthenticationCallback() {
             @Override
