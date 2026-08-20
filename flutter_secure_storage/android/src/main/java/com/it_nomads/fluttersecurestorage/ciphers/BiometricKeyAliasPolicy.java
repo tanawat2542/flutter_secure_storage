@@ -15,4 +15,11 @@ final class BiometricKeyAliasPolicy {
     ) {
         return wasPreviouslyRecovered || !hasLegacyAesKey || !hasLegacyBiometricState;
     }
+
+    static boolean shouldClearRecoveredStateOnCipherUse(
+            boolean usesIsolatedAlias,
+            boolean keyWasCreated
+    ) {
+        return usesIsolatedAlias && keyWasCreated;
+    }
 }

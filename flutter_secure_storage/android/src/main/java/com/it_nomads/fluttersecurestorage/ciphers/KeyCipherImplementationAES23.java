@@ -71,7 +71,6 @@ class KeyCipherImplementationAES23 implements KeyCipher {
             keyWasCreated = false;
         }
 
-        clearUnrecoverableBiometricState();
     }
 
     @Override
@@ -118,6 +117,10 @@ class KeyCipherImplementationAES23 implements KeyCipher {
 
     @Override
     public Cipher getCipher(Context context) throws Exception {
+        // Delay cleanup until this cipher is actually used. The migration flow
+        // constructs the current cipher before it has decrypted old data.
+        clearUnrecoverableBiometricState();
+
         KeyStore ks = KeyStore.getInstance(KEYSTORE_PROVIDER_ANDROID);
         ks.load(null);
         Key key = ks.getKey(keyAlias, null);
@@ -251,7 +254,10 @@ class KeyCipherImplementationAES23 implements KeyCipher {
      * is deliberately left intact.
      */
     private void clearUnrecoverableBiometricState() {
-        if (!usesIsolatedBiometricAlias || !keyWasCreated) {
+        if (!BiometricKeyAliasPolicy.shouldClearRecoveredStateOnCipherUse(
+                usesIsolatedBiometricAlias,
+                keyWasCreated
+        )) {
             return;
         }
 
