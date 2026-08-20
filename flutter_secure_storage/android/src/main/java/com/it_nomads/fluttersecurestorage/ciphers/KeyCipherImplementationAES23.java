@@ -201,10 +201,6 @@ class KeyCipherImplementationAES23 implements KeyCipher {
     }
 
     private boolean shouldUseIsolatedBiometricAlias(Key legacyKey) {
-        if (!config.getEnforceBiometrics()) {
-            return false;
-        }
-
         boolean hasLegacyAesKey = legacyKey instanceof SecretKey &&
                 KeyProperties.KEY_ALGORITHM_AES.equalsIgnoreCase(legacyKey.getAlgorithm());
         boolean hasLegacyBiometricState = hasStoredApplicationKey(context) ||
