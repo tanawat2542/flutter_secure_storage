@@ -18,6 +18,14 @@ public interface KeyCipher {
         return false;
     }
 
+    /**
+     * Whether this cipher selected a newly-created isolated key because the
+     * saved biometric state cannot be recovered on this device.
+     */
+    default boolean hasNewIsolatedRecoveryKey() {
+        return false;
+    }
+
     /** Marks the current namespace to use its isolated alias on retry. */
     default void markForIsolatedAliasRecovery() {}
 

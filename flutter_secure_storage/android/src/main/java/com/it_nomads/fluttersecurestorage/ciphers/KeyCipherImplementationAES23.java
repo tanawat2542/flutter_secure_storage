@@ -233,6 +233,14 @@ class KeyCipherImplementationAES23 implements KeyCipher {
     }
 
     @Override
+    public boolean hasNewIsolatedRecoveryKey() {
+        return BiometricKeyAliasPolicy.shouldClearRecoveredStateOnCipherUse(
+                usesIsolatedBiometricAlias,
+                keyWasCreated
+        );
+    }
+
+    @Override
     public void markForIsolatedAliasRecovery() {
         if (!usesIsolatedBiometricAlias) {
             context.getSharedPreferences(config.getConfigPreferencesName(), Context.MODE_PRIVATE)

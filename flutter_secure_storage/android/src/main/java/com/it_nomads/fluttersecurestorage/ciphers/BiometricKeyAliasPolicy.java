@@ -23,6 +23,13 @@ public final class BiometricKeyAliasPolicy {
         return usesIsolatedAlias && keyWasCreated;
     }
 
+    public static boolean shouldBypassMigrationForUnrecoverableRestore(
+            boolean savedUsesBiometricCipher,
+            boolean currentHasNewIsolatedRecoveryKey
+    ) {
+        return savedUsesBiometricCipher && currentHasNewIsolatedRecoveryKey;
+    }
+
     public static boolean shouldRetryWithIsolatedAlias(
             boolean canRecoverFromLegacyAlias,
             boolean applicationKeyDecryptionFailed
