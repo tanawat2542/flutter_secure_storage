@@ -377,8 +377,20 @@ public class FlutterSecureStorage {
                 // No biometric authentication needed - use non-authenticated cipher
                 // For AES_GCM_NoPadding_BIOMETRIC, cipher is already initialized from KeyStore
                 // with setUserAuthenticationRequired(false) when device has no security
-                storageCipher = storageCipherFactory.getCurrentStorageCipher(context, cipher);
-                callback.onSuccess(null);
+                try {
+                    storageCipher = storageCipherFactory.getCurrentStorageCipher(context, cipher);
+                    callback.onSuccess(null);
+                } catch (Exception e) {
+                    if (!retryWithIsolatedAliasOnApplicationKeyDecryptionFailure(
+                            configSource,
+                            callback,
+                            keyCipher,
+                            e
+                    )) {
+                        callback.onError(e);
+                    }
+                }
+
                 return;
             }
 
@@ -391,21 +403,15 @@ public class FlutterSecureStorage {
                         Log.d(TAG, "Biometric authentication succeeded");
                         callback.onSuccess(null);
                     } catch (Exception e) {
-                        if (BiometricKeyAliasPolicy.shouldRetryWithIsolatedAlias(
-                                keyCipher.canRecoverFromApplicationKeyDecryptionFailure(),
-                                isApplicationKeyDecryptionFailure(e)
+                        if (!retryWithIsolatedAliasOnApplicationKeyDecryptionFailure(
+                                configSource,
+                                callback,
+                                keyCipher,
+                                e
                         )) {
-                            Log.w(TAG, "Legacy AES key cannot decrypt this namespace. Retrying with isolated alias.", e);
-                            keyCipher.markForIsolatedAliasRecovery();
-                            storageCipher = null;
-                            initializeStorageCipher(configSource, callback);
-                            return;
+                            Log.e(TAG, "Failed to initialize storage cipher after authentication", e);
+                            callback.onError(e);
                         }
-
-                        Log.e(TAG, "Failed to initialize storage cipher after authentication", e);
-                        callback.onError(e);
-
-                        return;
                     }
                 }
 
@@ -461,6 +467,31 @@ public class FlutterSecureStorage {
         }
 
         return false;
+    }
+
+    /**
+     * A legacy global AES alias may belong to another namespace after restore.
+     * Retry once with the isolated alias only after an authenticated integrity failure.
+     */
+    private boolean retryWithIsolatedAliasOnApplicationKeyDecryptionFailure(
+            SharedPreferences configSource,
+            SecurePreferencesCallback<Void> callback,
+            KeyCipher keyCipher,
+            Exception error
+    ) {
+        if (!BiometricKeyAliasPolicy.shouldRetryWithIsolatedAlias(
+                keyCipher.canRecoverFromApplicationKeyDecryptionFailure(),
+                isApplicationKeyDecryptionFailure(error)
+        )) {
+            return false;
+        }
+
+        Log.w(TAG, "Legacy AES key cannot decrypt this namespace. Retrying with isolated alias.", error);
+        keyCipher.markForIsolatedAliasRecovery();
+        storageCipher = null;
+        initializeStorageCipher(configSource, callback);
+
+        return true;
     }
 
     /**
