@@ -10,6 +10,17 @@ public interface KeyCipher {
     // For symmetric keys
     Cipher getCipher(Context context) throws Exception;
 
+    /**
+     * Whether this cipher can recover from a verified application-key
+     * decryption failure by switching away from its legacy shared alias.
+     */
+    default boolean canRecoverFromApplicationKeyDecryptionFailure() {
+        return false;
+    }
+
+    /** Marks the current namespace to use its isolated alias on retry. */
+    default void markForIsolatedAliasRecovery() {}
+
     void deleteKey() throws Exception;
 
     // For asymmetric keys

@@ -15,6 +15,7 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 
 import com.it_nomads.fluttersecurestorage.ciphers.KeyCipher;
+import com.it_nomads.fluttersecurestorage.ciphers.BiometricKeyAliasPolicy;
 import com.it_nomads.fluttersecurestorage.ciphers.StorageCipher;
 import com.it_nomads.fluttersecurestorage.ciphers.StorageCipherFactory;
 import com.it_nomads.fluttersecurestorage.crypto.EncryptedSharedPreferences;
@@ -31,6 +32,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 import javax.crypto.Cipher;
+import javax.crypto.AEADBadTagException;
 
 public class FlutterSecureStorage {
 
@@ -360,7 +362,8 @@ public class FlutterSecureStorage {
             }
 
             // Check if the current algorithm requires biometric authentication
-            Cipher cipher = storageCipherFactory.getCurrentKeyCipher(context).getCipher(context);
+            KeyCipher keyCipher = storageCipherFactory.getCurrentKeyCipher(context);
+            Cipher cipher = keyCipher.getCipher(context);
             boolean enforceRequired = config.getEnforceBiometrics();
             boolean deviceHasSecurity = isDeviceSecure();
 
@@ -388,8 +391,20 @@ public class FlutterSecureStorage {
                         Log.d(TAG, "Biometric authentication succeeded");
                         callback.onSuccess(null);
                     } catch (Exception e) {
+                        if (BiometricKeyAliasPolicy.shouldRetryWithIsolatedAlias(
+                                keyCipher.canRecoverFromApplicationKeyDecryptionFailure(),
+                                isApplicationKeyDecryptionFailure(e)
+                        )) {
+                            Log.w(TAG, "Legacy AES key cannot decrypt this namespace. Retrying with isolated alias.", e);
+                            keyCipher.markForIsolatedAliasRecovery();
+                            storageCipher = null;
+                            initializeStorageCipher(configSource, callback);
+                            return;
+                        }
+
                         Log.e(TAG, "Failed to initialize storage cipher after authentication", e);
                         callback.onError(e);
+
                         return;
                     }
                 }
@@ -432,6 +447,20 @@ public class FlutterSecureStorage {
             Log.e(TAG, "Failed to initialize storage cipher", e);
             callback.onError(e);
         }
+    }
+
+    private boolean isApplicationKeyDecryptionFailure(Exception error) {
+        Throwable cause = error;
+        while (cause != null) {
+            if (cause instanceof AEADBadTagException ||
+                    cause instanceof javax.crypto.BadPaddingException ||
+                    cause instanceof javax.crypto.IllegalBlockSizeException) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+
+        return false;
     }
 
     /**

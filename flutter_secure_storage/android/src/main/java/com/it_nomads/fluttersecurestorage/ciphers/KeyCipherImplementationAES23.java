@@ -226,6 +226,21 @@ class KeyCipherImplementationAES23 implements KeyCipher {
         return useIsolatedAlias;
     }
 
+    @Override
+    public boolean canRecoverFromApplicationKeyDecryptionFailure() {
+        return !usesIsolatedBiometricAlias;
+    }
+
+    @Override
+    public void markForIsolatedAliasRecovery() {
+        if (!usesIsolatedBiometricAlias) {
+            context.getSharedPreferences(config.getConfigPreferencesName(), Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean(BIOMETRIC_ALIAS_RECOVERY_MARKER, true)
+                    .apply();
+        }
+    }
+
     private boolean hasEncryptedBiometricEntries() {
         SharedPreferences dataPreferences = context.getSharedPreferences(
                 config.getSharedPreferencesName(),

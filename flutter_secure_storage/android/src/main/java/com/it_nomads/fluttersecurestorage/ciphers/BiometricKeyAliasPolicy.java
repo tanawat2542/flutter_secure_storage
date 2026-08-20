@@ -5,10 +5,10 @@ package com.it_nomads.fluttersecurestorage.ciphers;
  * KeyStore alias. Only a verified legacy AES key with its matching biometric
  * state may remain on that alias.
  */
-final class BiometricKeyAliasPolicy {
+public final class BiometricKeyAliasPolicy {
     private BiometricKeyAliasPolicy() {}
 
-    static boolean shouldUseIsolatedAlias(
+    public static boolean shouldUseIsolatedAlias(
             boolean wasPreviouslyRecovered,
             boolean hasLegacyAesKey,
             boolean hasLegacyBiometricState
@@ -16,10 +16,17 @@ final class BiometricKeyAliasPolicy {
         return wasPreviouslyRecovered || !hasLegacyAesKey || !hasLegacyBiometricState;
     }
 
-    static boolean shouldClearRecoveredStateOnCipherUse(
+    public static boolean shouldClearRecoveredStateOnCipherUse(
             boolean usesIsolatedAlias,
             boolean keyWasCreated
     ) {
         return usesIsolatedAlias && keyWasCreated;
+    }
+
+    public static boolean shouldRetryWithIsolatedAlias(
+            boolean usesIsolatedAlias,
+            boolean applicationKeyDecryptionFailed
+    ) {
+        return !usesIsolatedAlias && applicationKeyDecryptionFailed;
     }
 }
