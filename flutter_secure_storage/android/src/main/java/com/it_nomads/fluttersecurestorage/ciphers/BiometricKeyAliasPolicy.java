@@ -24,9 +24,9 @@ public final class BiometricKeyAliasPolicy {
     }
 
     public static boolean shouldRetryWithIsolatedAlias(
-            boolean usesIsolatedAlias,
+            boolean canRecoverFromLegacyAlias,
             boolean applicationKeyDecryptionFailed
     ) {
-        return !usesIsolatedAlias && applicationKeyDecryptionFailed;
+        return canRecoverFromLegacyAlias && applicationKeyDecryptionFailed;
     }
 }
