@@ -203,8 +203,9 @@ class KeyCipherImplementationAES23 implements KeyCipher {
     private boolean shouldUseIsolatedBiometricAlias(Key legacyKey) {
         boolean hasLegacyAesKey = legacyKey instanceof SecretKey &&
                 KeyProperties.KEY_ALGORITHM_AES.equalsIgnoreCase(legacyKey.getAlgorithm());
-        boolean hasLegacyBiometricState = hasStoredApplicationKey(context) ||
-                hasEncryptedBiometricEntries();
+        // Ciphertext without its wrapped application key is unrecoverable and
+        // must not be used as evidence that this namespace owns the legacy alias.
+        boolean hasRecoverableLegacyBiometricState = hasStoredApplicationKey(context);
         boolean wasPreviouslyRecovered = context.getSharedPreferences(
                 config.getConfigPreferencesName(),
                 Context.MODE_PRIVATE
@@ -213,7 +214,7 @@ class KeyCipherImplementationAES23 implements KeyCipher {
         boolean useIsolatedAlias = BiometricKeyAliasPolicy.shouldUseIsolatedAlias(
                 wasPreviouslyRecovered,
                 hasLegacyAesKey,
-                hasLegacyBiometricState
+                hasRecoverableLegacyBiometricState
         );
 
         if (useIsolatedAlias) {
@@ -239,22 +240,6 @@ class KeyCipherImplementationAES23 implements KeyCipher {
                     .putBoolean(BIOMETRIC_ALIAS_RECOVERY_MARKER, true)
                     .apply();
         }
-    }
-
-    private boolean hasEncryptedBiometricEntries() {
-        SharedPreferences dataPreferences = context.getSharedPreferences(
-                config.getSharedPreferencesName(),
-                Context.MODE_PRIVATE
-        );
-        String dataKeyPrefix = config.getSharedPreferencesKeyPrefix() + "_";
-
-        for (String key : dataPreferences.getAll().keySet()) {
-            if (key.startsWith(dataKeyPrefix)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**
