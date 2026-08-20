@@ -146,6 +146,13 @@ public class FlutterSecureStorageConfig {
                 getStorageNamespace();
     }
 
+    /**
+     * Keeps Android KeyStore entries separate for distinct storage namespaces.
+     */
+    public String getKeyStoreAliasSuffix() {
+        return getStorageNamespace();
+    }
+
     public String getNamespacedKey(String baseKey) {
         return baseKey + "_" + getStorageNamespace() + "__" + getCryptoProfile();
     }
