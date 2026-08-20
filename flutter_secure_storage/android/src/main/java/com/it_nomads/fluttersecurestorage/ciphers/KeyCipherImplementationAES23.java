@@ -278,8 +278,15 @@ class KeyCipherImplementationAES23 implements KeyCipher {
         );
         keyPreferences.edit()
                 .remove(config.getNamespacedKey(STORAGE_APP_KEY))
-                .remove(STORAGE_APP_KEY + "_" + config.getStorageNamespace())
                 .remove(ivSharedPreferencesKey)
+                .apply();
+
+        SharedPreferences legacyKeyPreferences = context.getSharedPreferences(
+                legacyScopedIvSharedPreferencesName,
+                Context.MODE_PRIVATE
+        );
+        legacyKeyPreferences.edit()
+                .remove(STORAGE_APP_KEY + "_" + config.getStorageNamespace())
                 .remove(legacyScopedIvSharedPreferencesKey)
                 .apply();
 
