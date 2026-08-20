@@ -220,7 +220,10 @@ public class FlutterSecureStoragePlugin implements MethodCallHandler, FlutterPlu
 
                 @Override
                 public void onError(Exception e) {
-                    if (isDeleteOperation(call.method) && isKeyInvalidatedError(e)) {
+                    if (SecureStorageRecoveryPolicy.shouldForceResetAfterInitializationFailure(
+                            call.method,
+                            isKeyInvalidatedError(e)
+                    )) {
                         try {
                             Log.w(
                                     TAG,
@@ -253,10 +256,6 @@ public class FlutterSecureStoragePlugin implements MethodCallHandler, FlutterPlu
             return storageException != null
                     ? storageException.getCode()
                     : classifyErrorCode(e);
-        }
-
-        private boolean isDeleteOperation(String method) {
-            return "delete".equals(method) || "deleteAll".equals(method);
         }
 
         private boolean isKeyInvalidatedError(Exception e) {

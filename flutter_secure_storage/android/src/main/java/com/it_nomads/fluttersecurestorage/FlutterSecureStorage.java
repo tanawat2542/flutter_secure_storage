@@ -391,12 +391,26 @@ public class FlutterSecureStorage {
                     storageCipher = storageCipherFactory.getCurrentStorageCipher(context, cipher);
                     callback.onSuccess(null);
                 } catch (Exception e) {
-                    if (!retryWithIsolatedAliasOnApplicationKeyDecryptionFailure(
+                    if (retryWithIsolatedAliasOnApplicationKeyDecryptionFailure(
                             configSource,
                             callback,
                             keyCipher,
                             e
                     )) {
+                        return;
+                    }
+
+                    if (SecureStorageRecoveryPolicy.shouldUseResetOnErrorForInitializationFailure(
+                            isBiometricKeyCipher(keyCipher),
+                            isNonBiometricApplicationKeyInitializationFailure(e)
+                    )) {
+                        handleKeyMismatch(
+                                configSource,
+                                callback,
+                                e,
+                                "Stored application key cannot be decrypted"
+                        );
+                    } else {
                         callback.onError(e);
                     }
                 }
@@ -471,6 +485,27 @@ public class FlutterSecureStorage {
             if (cause instanceof AEADBadTagException ||
                     cause instanceof javax.crypto.BadPaddingException ||
                     cause instanceof javax.crypto.IllegalBlockSizeException) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+
+        return false;
+    }
+
+    /**
+     * The outer initialization handler historically sent all of these
+     * non-biometric key-mismatch errors through resetOnError. Keep that
+     * behavior after the inner recovery catch was introduced for biometrics.
+     */
+    private boolean isNonBiometricApplicationKeyInitializationFailure(Exception error) {
+        if (isApplicationKeyDecryptionFailure(error)) {
+            return true;
+        }
+
+        Throwable cause = error;
+        while (cause != null) {
+            if (cause instanceof InvalidKeyException) {
                 return true;
             }
             cause = cause.getCause();
