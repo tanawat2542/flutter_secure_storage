@@ -22,6 +22,7 @@ import java.security.NoSuchAlgorithmException;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.NoSuchPaddingException;
+import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
 class KeyCipherImplementationAES23 implements KeyCipher {
@@ -31,6 +32,8 @@ class KeyCipherImplementationAES23 implements KeyCipher {
     private static final String SHARED_PREFERENCES_NAME = "FlutterSecureKeyStorage";
     private static final String SHARED_PREFERENCES_KEY = "KeyStoreIV1";
     private static final String STORAGE_APP_KEY = "BVGhpcyBpcyB0aGUga2V5IGZvciBhIHNlY3VyZSBzdG9yYWdlIEFFUyBLZXkK";
+    private static final String BIOMETRIC_ALIAS_RECOVERY_MARKER = "BiometricKeyAliasV2";
+    private static final String ISOLATED_BIOMETRIC_ALIAS_SUFFIX = ".biometric-v2";
     private static final int IV_SIZE = 16;
     private static final int KEY_SIZE = 256;
     protected final String keyAlias;
@@ -38,6 +41,8 @@ class KeyCipherImplementationAES23 implements KeyCipher {
     private final String ivSharedPreferencesKey;
     private final String legacyScopedIvSharedPreferencesName;
     private final String legacyScopedIvSharedPreferencesKey;
+    private final boolean usesIsolatedBiometricAlias;
+    private final boolean keyWasCreated;
 
     protected final Context context;
     protected final FlutterSecureStorageConfig config;
@@ -49,13 +54,23 @@ class KeyCipherImplementationAES23 implements KeyCipher {
         this.ivSharedPreferencesKey = config.getNamespacedKey(SHARED_PREFERENCES_KEY);
         this.legacyScopedIvSharedPreferencesName = SHARED_PREFERENCES_NAME + "_" + config.getStorageNamespace();
         this.legacyScopedIvSharedPreferencesKey = SHARED_PREFERENCES_KEY + "_" + config.getStorageNamespace();
-        keyAlias = createKeyAlias(context);
         KeyStore ks = KeyStore.getInstance(KEYSTORE_PROVIDER_ANDROID);
         ks.load(null);
+
+        Key legacyKey = ks.getKey(createKeyAlias(context), null);
+        usesIsolatedBiometricAlias = shouldUseIsolatedBiometricAlias(legacyKey);
+        keyAlias = usesIsolatedBiometricAlias
+                ? createIsolatedBiometricKeyAlias(context)
+                : createKeyAlias(context);
+
         Key privateKey = ks.getKey(keyAlias, null);
         if (privateKey == null) {
             generateSymmetricKey();
+            keyWasCreated = true;
+        } else {
+            keyWasCreated = false;
         }
+
     }
 
     @Override
@@ -72,6 +87,11 @@ class KeyCipherImplementationAES23 implements KeyCipher {
         return context.getPackageName() + ".FlutterSecureStoragePluginKey";
     }
 
+    private String createIsolatedBiometricKeyAlias(Context context) {
+        return createKeyAlias(context) + ISOLATED_BIOMETRIC_ALIAS_SUFFIX + "." +
+                config.getKeyStoreAliasSuffix();
+    }
+
     @Override
     public void deleteKey() throws Exception {
         KeyStore ks = KeyStore.getInstance(KEYSTORE_PROVIDER_ANDROID);
@@ -86,14 +106,21 @@ class KeyCipherImplementationAES23 implements KeyCipher {
                 .edit()
                 .remove(legacyScopedIvSharedPreferencesKey)
                 .apply();
-        context.getSharedPreferences(SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE)
-                .edit()
-                .remove(SHARED_PREFERENCES_KEY)
-                .apply();
+
+        if (!usesIsolatedBiometricAlias) {
+            context.getSharedPreferences(SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .remove(SHARED_PREFERENCES_KEY)
+                    .apply();
+        }
     }
 
     @Override
     public Cipher getCipher(Context context) throws Exception {
+        // Delay cleanup until this cipher is actually used. The migration flow
+        // constructs the current cipher before it has decrypted old data.
+        clearUnrecoverableBiometricState();
+
         KeyStore ks = KeyStore.getInstance(KEYSTORE_PROVIDER_ANDROID);
         ks.load(null);
         Key key = ks.getKey(keyAlias, null);
@@ -171,6 +198,105 @@ class KeyCipherImplementationAES23 implements KeyCipher {
                 Context.MODE_PRIVATE
         );
         return legacyScopedPreferences.contains(STORAGE_APP_KEY + "_" + config.getStorageNamespace());
+    }
+
+    private boolean shouldUseIsolatedBiometricAlias(Key legacyKey) {
+        boolean hasLegacyAesKey = legacyKey instanceof SecretKey &&
+                KeyProperties.KEY_ALGORITHM_AES.equalsIgnoreCase(legacyKey.getAlgorithm());
+        // Ciphertext without its wrapped application key is unrecoverable and
+        // must not be used as evidence that this namespace owns the legacy alias.
+        boolean hasRecoverableLegacyBiometricState = hasStoredApplicationKey(context);
+        boolean wasPreviouslyRecovered = context.getSharedPreferences(
+                config.getConfigPreferencesName(),
+                Context.MODE_PRIVATE
+        ).getBoolean(BIOMETRIC_ALIAS_RECOVERY_MARKER, false);
+
+        boolean useIsolatedAlias = BiometricKeyAliasPolicy.shouldUseIsolatedAlias(
+                wasPreviouslyRecovered,
+                hasLegacyAesKey,
+                hasRecoverableLegacyBiometricState
+        );
+
+        if (useIsolatedAlias) {
+            context.getSharedPreferences(config.getConfigPreferencesName(), Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean(BIOMETRIC_ALIAS_RECOVERY_MARKER, true)
+                    .apply();
+        }
+
+        return useIsolatedAlias;
+    }
+
+    @Override
+    public boolean canRecoverFromApplicationKeyDecryptionFailure() {
+        return !usesIsolatedBiometricAlias;
+    }
+
+    @Override
+    public boolean hasNewIsolatedRecoveryKey() {
+        return BiometricKeyAliasPolicy.shouldClearRecoveredStateOnCipherUse(
+                usesIsolatedBiometricAlias,
+                keyWasCreated
+        );
+    }
+
+    @Override
+    public void markForIsolatedAliasRecovery() {
+        if (!usesIsolatedBiometricAlias) {
+            context.getSharedPreferences(config.getConfigPreferencesName(), Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean(BIOMETRIC_ALIAS_RECOVERY_MARKER, true)
+                    .apply();
+        }
+    }
+
+    /**
+     * A backup may restore biometric ciphertext and wrapping metadata without
+     * the device-bound Android KeyStore key. Once recovery selects the isolated
+     * alias, delete only that unrecoverable biometric namespace before the
+     * first authentication prompt. PIN storage uses a different namespace and
+     * is deliberately left intact.
+     */
+    private void clearUnrecoverableBiometricState() {
+        if (!BiometricKeyAliasPolicy.shouldClearRecoveredStateOnCipherUse(
+                usesIsolatedBiometricAlias,
+                keyWasCreated
+        )) {
+            return;
+        }
+
+        SharedPreferences keyPreferences = context.getSharedPreferences(
+                config.getKeyStoragePreferencesName(),
+                Context.MODE_PRIVATE
+        );
+        keyPreferences.edit()
+                .remove(config.getNamespacedKey(STORAGE_APP_KEY))
+                .remove(ivSharedPreferencesKey)
+                .apply();
+
+        SharedPreferences legacyKeyPreferences = context.getSharedPreferences(
+                legacyScopedIvSharedPreferencesName,
+                Context.MODE_PRIVATE
+        );
+        legacyKeyPreferences.edit()
+                .remove(STORAGE_APP_KEY + "_" + config.getStorageNamespace())
+                .remove(legacyScopedIvSharedPreferencesKey)
+                .apply();
+
+        SharedPreferences dataPreferences = context.getSharedPreferences(
+                config.getSharedPreferencesName(),
+                Context.MODE_PRIVATE
+        );
+        String dataKeyPrefix = config.getSharedPreferencesKeyPrefix() + "_";
+        SharedPreferences.Editor editor = dataPreferences.edit();
+
+        for (String key : dataPreferences.getAll().keySet()) {
+            if (key.startsWith(dataKeyPrefix)) {
+                editor.remove(key);
+            }
+        }
+
+        editor.apply();
     }
 
     /**

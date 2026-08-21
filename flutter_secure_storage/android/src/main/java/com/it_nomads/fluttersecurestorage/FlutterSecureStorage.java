@@ -15,6 +15,7 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 
 import com.it_nomads.fluttersecurestorage.ciphers.KeyCipher;
+import com.it_nomads.fluttersecurestorage.ciphers.BiometricKeyAliasPolicy;
 import com.it_nomads.fluttersecurestorage.ciphers.StorageCipher;
 import com.it_nomads.fluttersecurestorage.ciphers.StorageCipherFactory;
 import com.it_nomads.fluttersecurestorage.crypto.EncryptedSharedPreferences;
@@ -31,6 +32,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 import javax.crypto.Cipher;
+import javax.crypto.AEADBadTagException;
 
 public class FlutterSecureStorage {
 
@@ -353,14 +355,25 @@ public class FlutterSecureStorage {
         try {
             storageCipherFactory = new StorageCipherFactory(configSource, config.getPrefOptionKeyCipherAlgorithm(), config.getPrefOptionStorageCipherAlgorithm(), config);
 
+            KeyCipher keyCipher = storageCipherFactory.getCurrentKeyCipher(context);
+
             if (storageCipherFactory.requiresReEncryption()) {
-                Log.w(TAG, "Algorithm changed detected.");
-                handleKeyMismatch(configSource, callback, null, "Algorithm changed detected");
-                return;
+                KeyCipher savedKeyCipher = storageCipherFactory.getSavedKeyCipher(context);
+                if (BiometricKeyAliasPolicy.shouldBypassMigrationForUnrecoverableRestore(
+                        isBiometricKeyCipher(savedKeyCipher),
+                        keyCipher.hasNewIsolatedRecoveryKey()
+                )) {
+                    Log.w(TAG, "Discarding unrecoverable restored biometric state instead of migrating it.");
+                    updateAlgorithmMarkers(configSource);
+                } else {
+                    Log.w(TAG, "Algorithm changed detected.");
+                    handleKeyMismatch(configSource, callback, null, "Algorithm changed detected");
+                    return;
+                }
             }
 
             // Check if the current algorithm requires biometric authentication
-            Cipher cipher = storageCipherFactory.getCurrentKeyCipher(context).getCipher(context);
+            Cipher cipher = keyCipher.getCipher(context);
             boolean enforceRequired = config.getEnforceBiometrics();
             boolean deviceHasSecurity = isDeviceSecure();
 
@@ -374,8 +387,34 @@ public class FlutterSecureStorage {
                 // No biometric authentication needed - use non-authenticated cipher
                 // For AES_GCM_NoPadding_BIOMETRIC, cipher is already initialized from KeyStore
                 // with setUserAuthenticationRequired(false) when device has no security
-                storageCipher = storageCipherFactory.getCurrentStorageCipher(context, cipher);
-                callback.onSuccess(null);
+                try {
+                    storageCipher = storageCipherFactory.getCurrentStorageCipher(context, cipher);
+                    callback.onSuccess(null);
+                } catch (Exception e) {
+                    if (retryWithIsolatedAliasOnApplicationKeyDecryptionFailure(
+                            configSource,
+                            callback,
+                            keyCipher,
+                            e
+                    )) {
+                        return;
+                    }
+
+                    if (SecureStorageRecoveryPolicy.shouldUseResetOnErrorForInitializationFailure(
+                            isBiometricKeyCipher(keyCipher),
+                            isNonBiometricApplicationKeyInitializationFailure(e)
+                    )) {
+                        handleKeyMismatch(
+                                configSource,
+                                callback,
+                                e,
+                                "Stored application key cannot be decrypted"
+                        );
+                    } else {
+                        callback.onError(e);
+                    }
+                }
+
                 return;
             }
 
@@ -388,9 +427,15 @@ public class FlutterSecureStorage {
                         Log.d(TAG, "Biometric authentication succeeded");
                         callback.onSuccess(null);
                     } catch (Exception e) {
-                        Log.e(TAG, "Failed to initialize storage cipher after authentication", e);
-                        callback.onError(e);
-                        return;
+                        if (!retryWithIsolatedAliasOnApplicationKeyDecryptionFailure(
+                                configSource,
+                                callback,
+                                keyCipher,
+                                e
+                        )) {
+                            Log.e(TAG, "Failed to initialize storage cipher after authentication", e);
+                            callback.onError(e);
+                        }
                     }
                 }
 
@@ -432,6 +477,66 @@ public class FlutterSecureStorage {
             Log.e(TAG, "Failed to initialize storage cipher", e);
             callback.onError(e);
         }
+    }
+
+    private boolean isApplicationKeyDecryptionFailure(Exception error) {
+        Throwable cause = error;
+        while (cause != null) {
+            if (cause instanceof AEADBadTagException ||
+                    cause instanceof javax.crypto.BadPaddingException ||
+                    cause instanceof javax.crypto.IllegalBlockSizeException) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+
+        return false;
+    }
+
+    /**
+     * The outer initialization handler historically sent all of these
+     * non-biometric key-mismatch errors through resetOnError. Keep that
+     * behavior after the inner recovery catch was introduced for biometrics.
+     */
+    private boolean isNonBiometricApplicationKeyInitializationFailure(Exception error) {
+        if (isApplicationKeyDecryptionFailure(error)) {
+            return true;
+        }
+
+        Throwable cause = error;
+        while (cause != null) {
+            if (cause instanceof InvalidKeyException) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+
+        return false;
+    }
+
+    /**
+     * A legacy global AES alias may belong to another namespace after restore.
+     * Retry once with the isolated alias only after an authenticated integrity failure.
+     */
+    private boolean retryWithIsolatedAliasOnApplicationKeyDecryptionFailure(
+            SharedPreferences configSource,
+            SecurePreferencesCallback<Void> callback,
+            KeyCipher keyCipher,
+            Exception error
+    ) {
+        if (!BiometricKeyAliasPolicy.shouldRetryWithIsolatedAlias(
+                keyCipher.canRecoverFromApplicationKeyDecryptionFailure(),
+                isApplicationKeyDecryptionFailure(error)
+        )) {
+            return false;
+        }
+
+        Log.w(TAG, "Legacy AES key cannot decrypt this namespace. Retrying with isolated alias.", error);
+        keyCipher.markForIsolatedAliasRecovery();
+        storageCipher = null;
+        initializeStorageCipher(configSource, callback);
+
+        return true;
     }
 
     /**
@@ -966,6 +1071,14 @@ public class FlutterSecureStorage {
                 public void onError(Exception migrationError) {
                     Log.e(TAG, "Data migration failed: " + migrationError.getMessage(), migrationError);
 
+                    if (recoverUnrecoverableBiometricMigration(
+                            configSource,
+                            callback,
+                            migrationError
+                    )) {
+                        return;
+                    }
+
                     // Migration failed, check if we should delete
                     if (config.shouldDeleteOnFailure()) {
                         Log.w(TAG, "resetOnError is enabled. Deleting all data as fallback...");
@@ -997,6 +1110,36 @@ public class FlutterSecureStorage {
                 );
                 callback.onError(new Exception(userMessage, exception));
             }
+        }
+    }
+
+    /**
+     * A migration cannot preserve biometric data when the restored global AES
+     * alias belongs to another namespace. Mark it for isolated recovery and
+     * restart so the next initialization discards only this broken namespace.
+     */
+    private boolean recoverUnrecoverableBiometricMigration(
+            SharedPreferences configSource,
+            SecurePreferencesCallback<Void> callback,
+            Exception migrationError
+    ) {
+        try {
+            KeyCipher savedKeyCipher = storageCipherFactory.getSavedKeyCipher(context);
+            KeyCipher currentKeyCipher = storageCipherFactory.getCurrentKeyCipher(context);
+            if (!isBiometricKeyCipher(savedKeyCipher) ||
+                    !currentKeyCipher.canRecoverFromApplicationKeyDecryptionFailure() ||
+                    !isApplicationKeyDecryptionFailure(migrationError)) {
+                return false;
+            }
+
+            Log.w(TAG, "Biometric migration cannot decrypt restored state. Retrying with isolated alias.", migrationError);
+            currentKeyCipher.markForIsolatedAliasRecovery();
+            storageCipher = null;
+            initializeStorageCipher(configSource, callback);
+            return true;
+        } catch (Exception recoveryError) {
+            Log.w(TAG, "Could not prepare isolated alias recovery after migration failure.", recoveryError);
+            return false;
         }
     }
 
